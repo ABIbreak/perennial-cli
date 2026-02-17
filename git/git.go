@@ -6,35 +6,76 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"os/exec"
 	"strings"
 )
 
 // GetLatestCommit returns the latest commit hash from a git URL.
 //
 // Returns the full 40-character commit hash.
+// Uses the GitHub/GitLab API to avoid requiring git credentials.
 func GetLatestCommit(gitURL string) (string, error) {
-	if strings.HasPrefix(gitURL, "https://gitlab") {
-		// avoid a redirect warning
-		if !strings.HasSuffix(gitURL, ".git") {
-			gitURL = gitURL + ".git"
-		}
+	url := strings.TrimPrefix(gitURL, "git+")
+	url = strings.TrimSuffix(url, ".git")
+
+	if strings.Contains(url, "github.com") {
+		return getLatestCommitGitHub(url)
+	} else if strings.Contains(url, "gitlab") {
+		return getLatestCommitGitLab(url)
 	}
-	cmd := exec.Command("git", "ls-remote", gitURL, "HEAD")
-	cmd.Stderr = os.Stderr
-	output, err := cmd.Output()
+	return "", fmt.Errorf("unsupported git hosting service: %s", url)
+}
+
+func getLatestCommitGitHub(url string) (string, error) {
+	repo := strings.Replace(url, "https://github.com/", "", 1)
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/commits/HEAD", repo)
+
+	resp, err := http.Get(apiURL)
 	if err != nil {
-		return "", fmt.Errorf("failed to run git ls-remote: %w", err)
+		return "", fmt.Errorf("failed to fetch latest commit: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to fetch latest commit: status %d", resp.StatusCode)
 	}
 
-	// Output format: "commit_hash\tHEAD"
-	parts := strings.Fields(string(output))
-	if len(parts) < 1 {
-		return "", fmt.Errorf("unexpected git ls-remote output: %s", output)
+	var result struct {
+		SHA string `json:"sha"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("failed to parse GitHub API response: %w", err)
 	}
 
-	return parts[0], nil
+	return result.SHA, nil
+}
+
+func getLatestCommitGitLab(url string) (string, error) {
+	parts := strings.SplitN(url, "/", 4)
+	if len(parts) < 4 {
+		return "", fmt.Errorf("invalid GitLab URL format: %s", url)
+	}
+	domain := parts[0] + "//" + parts[2]
+	projectPath := strings.ReplaceAll(parts[3], "/", "%2F")
+	apiURL := fmt.Sprintf("%s/api/v4/projects/%s/repository/commits/HEAD", domain, projectPath)
+
+	resp, err := http.Get(apiURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch latest commit: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to fetch latest commit: status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("failed to parse GitLab API response: %w", err)
+	}
+
+	return result.ID, nil
 }
 
 // ResolveCommit resolves an abbreviated commit hash to a full hash.
