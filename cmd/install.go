@@ -56,7 +56,12 @@ type fileToInstall struct {
 	dest string
 }
 
-func getFilesToInstall(makeVars map[string]string, sources []string) []fileToInstall {
+func getFilesToInstall(makeVars map[string]string, sources []string, vos bool) []fileToInstall {
+	compiledExt := ".vo"
+	if vos {
+		compiledExt = ".vos"
+	}
+
 	// Create request and response channels
 	numWorkers := runtime.NumCPU()
 	requests := make(chan string, numWorkers)
@@ -67,7 +72,7 @@ func getFilesToInstall(makeVars map[string]string, sources []string) []fileToIns
 		go func() {
 			for vFile := range requests {
 				// NOTE: not installing glob files
-				voFile := setExtension(vFile, ".vo")
+				voFile := setExtension(vFile, compiledExt)
 				destDir := rocq_makefile.DestinationOf(makeVars, voFile)
 
 				result := []fileToInstall{
@@ -114,16 +119,25 @@ func installAll(quietMode bool, filesToInstall []fileToInstall) error {
 	return nil
 }
 
+// uninstallAll uninstalls filesToInstall with both vo and vos variants
 func uninstallAll(quietMode bool, filesToInstall []fileToInstall) error {
+	var files []string
 	for _, f := range filesToInstall {
+		files = append(files, f.dest)
+		if path.Ext(f.dest) == "vo" {
+			files = append(files, setExtension(f.dest, "vos"))
+		}
+	}
+	for _, dest := range files {
 		// Delete the destination file, ignoring if it doesn't exist
-		if err := os.Remove(f.dest); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("failed to remove %s: %v", f.dest, err)
+		if err := os.Remove(dest); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove %s: %v", dest, err)
+		} else {
+			if err == nil && !quietMode {
+				fmt.Printf("RM %s\n", dest)
+			}
 		}
 
-		if !quietMode {
-			fmt.Printf("RM %s\n", f.dest)
-		}
 	}
 	return nil
 }
@@ -131,6 +145,7 @@ func uninstallAll(quietMode bool, filesToInstall []fileToInstall) error {
 func getInstallFiles(cmd *cobra.Command, args []string) ([]fileToInstall, map[string]string, error) {
 	rocqdepName, _ := cmd.Flags().GetString("file")
 	installDeps, _ := cmd.Flags().GetBool("install-deps")
+	vos, _ := cmd.Flags().GetBool("vos")
 	if len(args) == 0 {
 		// If no args, walk current directory
 		args = []string{"."}
@@ -174,7 +189,7 @@ func getInstallFiles(cmd *cobra.Command, args []string) ([]fileToInstall, map[st
 	}
 
 	// Install sources
-	return getFilesToInstall(makeVars, sources), makeVars, nil
+	return getFilesToInstall(makeVars, sources, vos), makeVars, nil
 }
 
 // installCmd represents the install command
@@ -210,7 +225,7 @@ Emulates the functionality of "make install" when using rocq makefile.
 var uninstallCmd = &cobra.Command{
 	Use:   "uninstall <FILES>",
 	Short: "Uninstall build outputs to Rocq user-contrib",
-	Long: `Uninstall .vo files from the opam switch.
+	Long: `Uninstall .vo and .vos files from the opam switch.
 
 Takes a list of either .v files or directories (which are searched recursively
 for all *.v files). Will automatically uninstall any dependencies required by
@@ -239,8 +254,10 @@ func init() {
 	installCmd.PersistentFlags().StringP("file", "f", ".rocqdeps.d", "Path to .rocqdeps.d file")
 	installCmd.PersistentFlags().BoolP("quiet", "q", false, "quiet mode (don't print list of installed files)")
 	installCmd.PersistentFlags().Bool("install-deps", true, "install dependencies of supplied files")
+	installCmd.PersistentFlags().Bool("vos", false, "install .vos files instead of .vo")
 
 	uninstallCmd.PersistentFlags().StringP("file", "f", ".rocqdeps.d", "Path to .rocqdeps.d file")
 	uninstallCmd.PersistentFlags().BoolP("quiet", "q", false, "quiet mode (don't print list of uninstalled files)")
 	uninstallCmd.PersistentFlags().Bool("install-deps", true, "also uninstall dependencies")
+	uninstallCmd.PersistentFlags().Bool("vos", false, "ignored (vos files are also uninstalled)")
 }
